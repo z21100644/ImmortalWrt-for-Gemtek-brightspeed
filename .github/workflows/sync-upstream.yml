@@ -4,9 +4,20 @@ on:
   schedule:
     - cron: '0 19 */3 * *'
   workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type of the firmware build triggered after a sync with updates'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - none
+          - release
+          - prerelease
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   sync-upstream:
@@ -46,7 +57,9 @@ jobs:
 
       - name: Merge upstream
         if: steps.check.outputs.has_updates == 'true'
+        id: merge
         run: |
+          echo "old_base=$(git merge-base HEAD upstream/master)" >> "$GITHUB_OUTPUT"
           git merge --no-edit upstream/master || {
             echo "::error::Merge failed. Conflicts need manual resolution."
             git diff --name-only --diff-filter=U
@@ -56,6 +69,29 @@ jobs:
       - name: Push to origin
         if: steps.check.outputs.has_updates == 'true'
         run: git push origin master
+
+      # GITHUB_TOKEN 的 push 不会触发其他 workflow，这里显式 dispatch 编译发布
+      - name: Trigger firmware build
+        if: steps.check.outputs.has_updates == 'true' && (inputs.release_type || 'release') != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OLD_BASE: ${{ steps.merge.outputs.old_base }}
+        run: |
+          new_base=$(git rev-parse upstream/master)
+          count=$(git rev-list --no-merges --count "$OLD_BASE..$new_base")
+          notes=$(
+            echo "自动同步上游 immortalwrt/immortalwrt：${OLD_BASE:0:8} → ${new_base:0:8}（${count} 个提交）"
+            echo ""
+            echo "https://github.com/immortalwrt/immortalwrt/compare/${OLD_BASE}...${new_base}"
+            echo ""
+            git log --no-merges --format='- %s' "$OLD_BASE..$new_base" | head -n 30
+            [ "$count" -le 30 ] || echo "- ……"
+          )
+          gh workflow run build-firmware.yml \
+            --ref master \
+            -f config_seed=1710.config \
+            -f release_type='${{ inputs.release_type || 'release' }}' \
+            -f release_notes="$notes"
 
       - name: Show result
         if: always()

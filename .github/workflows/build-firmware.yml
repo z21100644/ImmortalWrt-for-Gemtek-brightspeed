@@ -9,6 +9,7 @@ on:
         default: '1710.config'
         type: choice
         options:
+          - all
           - 1710.config
           - 2010.config
           - 2010-2g.config
@@ -29,15 +30,46 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      date: ${{ steps.version.outputs.date }}
+      build_id: ${{ steps.version.outputs.build_id }}
+      repo_commit: ${{ steps.version.outputs.repo_commit }}
+      upstream_commit: ${{ steps.version.outputs.upstream_commit }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      device_models: ${{ steps.matrix.outputs.device_models }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Select configs
+        id: matrix
+        run: |
+          case '${{ inputs.config_seed }}' in
+            all) seeds='1710.config 2010.config 2010-2g.config' ;;
+            *) seeds='${{ inputs.config_seed }}' ;;
+          esac
+          entries=()
+          models=()
+          for seed in $seeds; do
+            case "$seed" in
+              1710.config) device_model=XR1710G ;;
+              2010.config) device_model=XG2010G ;;
+              2010-2g.config) device_model=XG2010G-2G ;;
+              *) echo "Unsupported config seed: $seed" >&2; exit 1 ;;
+            esac
+            entries+=("{\"config_seed\":\"$seed\",\"device_model\":\"$device_model\"}")
+            models+=("$device_model")
+          done
+          matrix="{\"include\":[$(IFS=,; echo "${entries[*]}")]}"
+          device_models=$(IFS=/; echo "${models[*]}")
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+          echo "device_models=$device_models" >> $GITHUB_OUTPUT
+          echo "Build matrix: $matrix"
 
       - name: Generate build version
         id: version
@@ -60,15 +92,19 @@ jobs:
           echo "repo_commit=$repo_commit" >> $GITHUB_OUTPUT
           echo "upstream_commit=$upstream_commit" >> $GITHUB_OUTPUT
           echo "version_number=$version_number" >> $GITHUB_OUTPUT
-          echo "version_code=$version_code" >> $GITHUB_OUTPUT
-          case '${{ inputs.config_seed }}' in
-            1710.config) device_model=XR1710G ;;
-            2010.config) device_model=XG2010G ;;
-            2010-2g.config) device_model=XG2010G-2G ;;
-            *) echo "Unsupported config seed: ${{ inputs.config_seed }}" >&2; exit 1 ;;
-          esac
-          echo "device_model=$device_model" >> $GITHUB_OUTPUT
-          echo "Build version: ImmortalWrt-for-Gemtek-brightspeed $device_model $version_number"
+          echo "Build version: ImmortalWrt-for-Gemtek-brightspeed $version_number"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup build environment
         run: |
@@ -86,12 +122,12 @@ jobs:
 
       - name: Configure
         run: |
-          cp '${{ inputs.config_seed }}' .config
-          BUILD_DATE='${{ steps.version.outputs.date }}' \
-          BUILD_ID='${{ steps.version.outputs.build_id }}' \
-          REPO_COMMIT='${{ steps.version.outputs.repo_commit }}' \
-          UPSTREAM_COMMIT='${{ steps.version.outputs.upstream_commit }}' \
-          VERSION_CODE='${{ steps.version.outputs.version_code }}' \
+          cp '${{ matrix.config_seed }}' .config
+          BUILD_DATE='${{ needs.prepare.outputs.date }}' \
+          BUILD_ID='${{ needs.prepare.outputs.build_id }}' \
+          REPO_COMMIT='${{ needs.prepare.outputs.repo_commit }}' \
+          UPSTREAM_COMMIT='${{ needs.prepare.outputs.upstream_commit }}' \
+          VERSION_CODE='${{ needs.prepare.outputs.version_code }}' \
           bash scripts/set-build-version.sh .config
           make defconfig
           bash scripts/check-gemtek-profile-isolation.sh --config .config
@@ -128,7 +164,8 @@ jobs:
           bash scripts/check-firmware-artifacts.sh \
             --config .config \
             --directory bin/targets/airoha/an7581
-          kernel_config=$(find build_dir/target-aarch64_cortex-a53_musl/linux-airoha_an7581 -path '*/linux-*/.config' -print -quit)
+          # 只取 kernel 源码目录 linux-<版本>/.config；同层的 backports-*/ 等 kmod 构建目录也有 .config
+          kernel_config=$(find build_dir/target-aarch64_cortex-a53_musl/linux-airoha_an7581 -mindepth 2 -maxdepth 2 -path '*/linux-[0-9]*/.config' -print -quit)
           manifest=$(find bin/targets/airoha/an7581 -maxdepth 1 -type f -name '*manifest' -print -quit)
           test -n "$kernel_config"
           test -n "$manifest"
@@ -156,7 +193,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: gemtek-${{ inputs.config_seed }}-firmware
+          name: gemtek-${{ matrix.config_seed }}-firmware
           path: |
             build.log
             build-verbose.log
@@ -169,8 +206,41 @@ jobs:
           retention-days: 30
         if: always()
 
+      - name: Collect release files
+        if: inputs.release_type != 'none'
+        shell: bash
+        run: |
+          # 多机型共用一个 Release，同名的 sha256sums/buildinfo 加机型前缀区分
+          mkdir -p release
+          cp bin/targets/airoha/an7581/*.itb release/
+          for f in config.buildinfo feeds.buildinfo version.buildinfo sha256sums; do
+            cp "bin/targets/airoha/an7581/$f" "release/${{ matrix.device_model }}-$f"
+          done
+          ls -la release
+
+      - name: Upload release files
+        if: inputs.release_type != 'none'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.config_seed }}
+          path: release/*
+          retention-days: 1
+
+  release:
+    needs: [prepare, build]
+    if: inputs.release_type != 'none'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
       - name: Build release body
-        if: github.event.inputs.release_type != 'none'
         id: release_body
         env:
           RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
@@ -191,19 +261,13 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Create Release
-        if: github.event.inputs.release_type != 'none'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ format('{0}-{1}', steps.version.outputs.date, steps.version.outputs.repo_commit) }}
-          name: ${{ format('{0} - Gemtek {1} Build ({2})', steps.version.outputs.date, steps.version.outputs.device_model, steps.version.outputs.repo_commit) }}
+          tag_name: ${{ format('{0}-{1}', needs.prepare.outputs.date, needs.prepare.outputs.repo_commit) }}
+          name: ${{ format('{0} - Gemtek {1} Build ({2})', needs.prepare.outputs.date, needs.prepare.outputs.device_models, needs.prepare.outputs.repo_commit) }}
           body: ${{ steps.release_body.outputs.body }}
           draft: false
           prerelease: ${{ github.event.inputs.release_type == 'prerelease' }}
-          files: |
-            bin/targets/airoha/an7581/*.itb
-            bin/targets/airoha/an7581/config.buildinfo
-            bin/targets/airoha/an7581/feeds.buildinfo
-            bin/targets/airoha/an7581/version.buildinfo
-            bin/targets/airoha/an7581/sha256sums
+          files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
