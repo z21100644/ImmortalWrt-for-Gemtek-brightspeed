@@ -2,7 +2,7 @@ name: Sync Upstream ImmortalWrt
 
 on:
   schedule:
-    - cron: '0 19 */3 * *'
+    - cron: '0 19 * * *'
   workflow_dispatch:
     inputs:
       release_type:
