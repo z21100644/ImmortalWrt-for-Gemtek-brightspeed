@@ -132,7 +132,6 @@ XG2010G 与 XR1710G 同属 Airoha AN7581 平台，但硬件布局和软件包集
 | `luci-app-airoha-recovery` | [`naoki66/luci-app-airoha`](https://github.com/naoki66/luci-app-airoha) | 一键重启进入 U-Boot HTTP Recovery（一次性触发） |
 | `luci-app-mesh-conf` | [`naoki66/luci-app-airoha`](https://github.com/naoki66/luci-app-airoha) | Mesh 与有线回程配置 |
 | `luci-app-netmode` | [`naoki66/luci-app-airoha`](https://github.com/naoki66/luci-app-airoha) | Router/AP/有线回程网络模式控制 |
-| `luci-app-lucky` | [sirpdboy/luci-app-lucky](https://github.com/sirpdboy/luci-app-lucky) | Lucky（DDNS/反代/端口转发） |
 
 #### 网络与远程接入
 
@@ -156,12 +155,9 @@ XG2010G 与 XR1710G 同属 Airoha AN7581 平台，但硬件布局和软件包集
 | `luci-app-autoreboot` | 定时重启 |
 | `luci-app-timewol` | 定时网络唤醒 |
 | `luci-app-wifischedule` | Wi-Fi 定时开关 |
-| `luci-app-watchcat` | 网络看门狗 |
 | `luci-app-wol` | 网络唤醒 |
-| `luci-app-vlmcsd` | KMS 激活服务 |
 | `luci-app-rtp2httpd` | RTP 转 HTTP |
 | `luci-app-udpxy` | UDP 组播代理 |
-| `luci-app-wechatpush` | 微信推送通知 |
 | `luci-app-wifihistory` | WiFi 历史记录 |
 
 > 为控制固件体积，当前不预装 `luci-app-openclash`、`luci-app-passwall`、`luci-app-adguardhome` 和 `luci-app-smartdns`；SmartDNS 核心及独立 UI 仍保留。
